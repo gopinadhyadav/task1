@@ -7,12 +7,15 @@ import numpy as np
 
 # Function to scrape text from a webpage
 def scrape_website(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-
-    # Extract text from paragraphs (you can enhance this as needed)
-    paragraphs = soup.find_all('p')
-    text = ' '.join([para.get_text() for para in paragraphs])
+    if url.startswith('file://'):  # Handle local files
+        file_path = url[7:]
+        with open(file_path, 'r', encoding='utf-8') as file:
+            text = file.read()
+    else:
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        paragraphs = soup.find_all('p')
+        text = ' '.join([para.get_text() for para in paragraphs])
     return text
 
 # Function to initialize the RAG model, tokenizer, and retriever
@@ -22,58 +25,68 @@ def initialize_rag_model():
     model = RagSequenceForGeneration.from_pretrained("facebook/rag-token-nq")
     return model, tokenizer, retriever
 
-# Function to embed website content for FAISS (or any other retrieval mechanism)
+# Function to embed text for FAISS (or any other retrieval mechanism)
 def embed_text(text, tokenizer, model):
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
     input_ids = inputs["input_ids"]
-    # Get embeddings from the RAG model's encoder
+
     with torch.no_grad():
         embeddings = model.question_encoder(input_ids).last_hidden_state
+
     return embeddings.squeeze(0).numpy()
 
 # Function to handle query generation from user input
 def generate_answer(query, model, tokenizer, retriever, index):
+    # Tokenize the query and get embeddings
     inputs = tokenizer(query, return_tensors="pt")
-    # Retrieve the relevant documents (simulated for now as simple retrieval logic)
-    D, I = index.search(np.array(inputs["input_ids"]).astype(np.float32), 1)  # Search for closest document
+    query_embeddings = model.question_encoder(inputs["input_ids"]).last_hidden_state.squeeze(0).numpy()
 
+    # Use FAISS to search for the closest document
+    D, I = index.search(query_embeddings.astype(np.float32), 1)  # Search for closest document
     retrieved_docs = [index.reconstruct(i) for i in I[0]]  # Reconstruct the documents
-    context_input_ids = tokenizer(retrieved_docs[0], return_tensors="pt").input_ids
 
     # Generate answer from the RAG model
+    context_input_ids = tokenizer(retrieved_docs[0], return_tensors="pt").input_ids
     generated_ids = model.generate(input_ids=inputs["input_ids"], context_input_ids=context_input_ids)
     answer = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+
     return answer
 
 # Main function to interact with the website and the RAG model
 def interact_with_website(url):
-    # Scrape content from the website
     website_text = scrape_website(url)
     print("Website content scraped successfully.\n")
 
-    # Initialize the RAG model, tokenizer, and retriever
     model, tokenizer, retriever = initialize_rag_model()
 
-    # Index website text (you may need to chunk the text into smaller parts for better performance)
-    # For simplicity, we'll just index the whole website as one document here
-    embeddings = embed_text(website_text, tokenizer, model)
-    
+    # Break website content into smaller chunks (for example, by paragraphs)
+    chunks = website_text.split('\n')  # Example: Split by newline (you could use more sophisticated chunking)
+
+    # Embed the chunks and create a FAISS index
+    embeddings = []
+    for chunk in chunks:
+        embeddings.append(embed_text(chunk, tokenizer, model))
+
+    embeddings = np.array(embeddings)
+
     # Create a FAISS index to store the embeddings
     index = faiss.IndexFlatL2(embeddings.shape[1])  # Use L2 distance (Euclidean)
-    index.add(np.array([embeddings]))  # Add the embeddings to the index
+    index.add(embeddings)  # Add the embeddings to the index
 
     # Interact with the user
     print("You can now ask questions related to the website content.\n")
+
     while True:
         query = input("Ask a question (or type 'exit' to quit): ")
+
         if query.lower() in ['exit', 'quit']:
             break
+
         # Generate the answer based on the query
         answer = generate_answer(query, model, tokenizer, retriever, index)
         print(f"Answer: {answer}\n")
 
 # Example usage:
-if __name__ == "__main__":
-    website_url = "file:///C:/Users/DELL/AppData/Local/Microsoft/Windows/INetCache/IE/XCIMV7DW/Sithafal_-_project-tasks[1].pd"  # Change this to the website URL of interest
+if _name_ == "_main_":
+    website_url = "file:///C:/Users/DELL/AppData/Local/Microsoft/Windows/INetCache/IE/XCIMV7DW/Sithafal_-_project-tasks[1].pd"  # Local file URL for testing
     interact_with_website(website_url)
-
