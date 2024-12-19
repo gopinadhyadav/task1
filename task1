@@ -3,17 +3,19 @@ import numpy as np
 import pdfplumber
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
-from PyPDF2 import PdRreader
-import os
-import warning
+from PyPDF2 import PdfReader  # Corrected import for PDF reader
 
 # Step 1: Extract text from PDF using pdfplumber
 def extract_text_from_pdf(pdf_path):
-    with pdfplumber.open(pdf_path) as pdf:
-        text = ""
-        for page in pdf.pages:
-            text += page.extract_text()
-    return text
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text() or ""  # Avoid None if text extraction fails
+        return text
+    except Exception as e:
+        print(f"Error extracting text from PDF: {e}")
+        return ""
 
 # Step 2: Initialize SentenceTransformer model and FAISS index
 def initialize_faiss_index(text):
@@ -45,6 +47,9 @@ def chat_with_pdf(pdf_path, query):
     # Step 1: Extract text from the PDF
     pdf_text = extract_text_from_pdf(pdf_path)
 
+    if not pdf_text:
+        return "Failed to extract text from the PDF."
+
     # Step 2: Initialize FAISS index
     model, sentences, index = initialize_faiss_index(pdf_text)
 
@@ -56,8 +61,9 @@ def chat_with_pdf(pdf_path, query):
     return response
 
 # Example usage
-if __name__ == "__main__":
-    pdf_path = "file:///C:/Users/DELL/Desktop/gopitask1/Sithafal%20-%20project-tasks.pdf"  # Path to the PDF
+if _name_ == "_main_":
+    # Make sure to use the correct path to the PDF file
+    pdf_path = "C:/Users/DELL/Desktop/gopitask1/Sithafal - project-tasks.pdf"  # Local file path
     query = "What is the main purpose of this document?"  # Your query to the PDF
     response = chat_with_pdf(pdf_path, query)
     print(response)
