@@ -1,80 +1,79 @@
-import openai
 import requests
 from bs4 import BeautifulSoup
+from transformers import RagTokenizer, RagRetriever, RagSequenceForGeneration
 import faiss
+import torch
 import numpy as np
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
 
-# Initialize OpenAI API
-openai.api_key = "your-openai-api-key"
-
-# Function to extract text from a website using BeautifulSoup
-def extract_text_from_website(url):
+# Function to scrape text from a webpage
+def scrape_website(url):
     response = requests.get(url)
     soup = BeautifulSoup(response.text, 'html.parser')
 
-    # Get text from all paragraphs (<p> tags)
+    # Extract text from paragraphs (you can enhance this as needed)
     paragraphs = soup.find_all('p')
-    text = ""
-    for para in paragraphs:
-        text += para.get_text() + "\n\n"
+    text = ' '.join([para.get_text() for para in paragraphs])
     return text
 
-# Function to encode text using OpenAI's embeddings model
-def get_embeddings(texts):
-    embeddings = OpenAIEmbeddings(www.example.com)
-    return embeddings.embed_documents(texts)
+# Function to initialize the RAG model, tokenizer, and retriever
+def initialize_rag_model():
+    tokenizer = RagTokenizer.from_pretrained("facebook/rag-token-nq")
+    retriever = RagRetriever.from_pretrained("facebook/rag-token-nq", index_name="exact", use_dummy_dataset=True)
+    model = RagSequenceForGeneration.from_pretrained("facebook/rag-token-nq")
+    return model, tokenizer, retriever
 
-# Function to retrieve relevant documents using FAISS
-def retrieve_relevant_docs(query, faiss_index, top_k=3):
-    # Generate the query embedding
-    query_embedding = get_embeddings([query])[0]
-    # Perform similarity search
-    distances, indices = faiss_index.search(np.array([query_embedding], dtype=np.float32), top_k)
-    return indices, distances
+# Function to embed website content for FAISS (or any other retrieval mechanism)
+def embed_text(text, tokenizer, model):
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    input_ids = inputs["input_ids"]
+    # Get embeddings from the RAG model's encoder
+    with torch.no_grad():
+        embeddings = model.question_encoder(input_ids).last_hidden_state
+    return embeddings.squeeze(0).numpy()
 
-# Function to generate a response from OpenAI's GPT model
-def generate_response(context, query):
-    prompt = f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
-    response = openai.Completion.create(
-        model="gpt-4", 
-        prompt=prompt, 
-        max_tokens=150
-    )
-    return response.choices[0].text.strip()
+# Function to handle query generation from user input
+def generate_answer(query, model, tokenizer, retriever, index):
+    inputs = tokenizer(query, return_tensors="pt")
+    # Retrieve the relevant documents (simulated for now as simple retrieval logic)
+    D, I = index.search(np.array(inputs["input_ids"]).astype(np.float32), 1)  # Search for closest document
 
-# Main function to implement RAG pipeline
-def main(url, query):
-    # Step 1: Extract text from the website
-    text = extract_text_from_website(url)
+    retrieved_docs = [index.reconstruct(i) for i in I[0]]  # Reconstruct the documents
+    context_input_ids = tokenizer(retrieved_docs[0], return_tensors="pt").input_ids
+
+    # Generate answer from the RAG model
+    generated_ids = model.generate(input_ids=inputs["input_ids"], context_input_ids=context_input_ids)
+    answer = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+    return answer
+
+# Main function to interact with the website and the RAG model
+def interact_with_website(url):
+    # Scrape content from the website
+    website_text = scrape_website(url)
+    print("Website content scraped successfully.\n")
+
+    # Initialize the RAG model, tokenizer, and retriever
+    model, tokenizer, retriever = initialize_rag_model()
+
+    # Index website text (you may need to chunk the text into smaller parts for better performance)
+    # For simplicity, we'll just index the whole website as one document here
+    embeddings = embed_text(website_text, tokenizer, model)
     
-    # Step 2: Split the text into chunks (e.g., paragraphs)
-    chunks = text.split("\n\n")  # Split based on double newlines (paragraphs)
+    # Create a FAISS index to store the embeddings
+    index = faiss.IndexFlatL2(embeddings.shape[1])  # Use L2 distance (Euclidean)
+    index.add(np.array([embeddings]))  # Add the embeddings to the index
 
-    # Step 3: Encode chunks using OpenAI embeddings
-    embeddings = get_embeddings(chunks)
+    # Interact with the user
+    print("You can now ask questions related to the website content.\n")
+    while True:
+        query = input("Ask a question (or type 'exit' to quit): ")
+        if query.lower() in ['exit', 'quit']:
+            break
+        # Generate the answer based on the query
+        answer = generate_answer(query, model, tokenizer, retriever, index)
+        print(f"Answer: {answer}\n")
 
-    # Step 4: Build FAISS index
-    dimension = len(embeddings[0])  # Embedding size
-    faiss_index = faiss.IndexFlatL2(dimension)  # Flat L2 distance index
-    faiss_index.add(np.array(embeddings, dtype=np.float32))
-
-    # Step 5: Retrieve relevant chunks based on query
-    indices, _ = retrieve_relevant_docs(query, faiss_index, top_k=3)
-
-    # Step 6: Combine retrieved chunks to form context
-    context = "\n\n".join([chunks[i] for i in indices[0]])
-
-    # Step 7: Generate response using OpenAI GPT
-    response = generate_response(context, query)
-    return response
-
+# Example usage:
 if __name__ == "__main__":
-    # Example URL and query
-    url = "https://example.com"  # Replace with the actual URL
-    user_query = "What is the main topic of the website?"
+    website_url = "file:///C:/Users/DELL/AppData/Local/Microsoft/Windows/INetCache/IE/XCIMV7DW/Sithafal_-_project-tasks[1].pd"  # Change this to the website URL of interest
+    interact_with_website(website_url)
 
-    # Chat with website
-    answer = main(www.example.com, user_query)
-    print("Answer:", answer)
