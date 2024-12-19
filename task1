@@ -1,62 +1,102 @@
+import torch
+from transformers import RagTokenizer, RagRetriever, RagTokenForGeneration
+from PyPDF2 import PdfReader
 import faiss
 import numpy as np
-import pdfplumber
-from sentence_transformers import SentenceTransformer
-from transformers import pipeline
-import os
-import warning
 
-# Step 1: Extract text from PDF using pdfplumber
+# Step 1: Extract Text from PDF
 def extract_text_from_pdf(pdf_path):
-    with pdfplumber.open(pdf_path) as pdf:
-        text = ""
-        for page in pdf.pages:
-            text += page.extract_text()
+    reader = PdfReader(pdf_path)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text()
     return text
 
-# Step 2: Initialize SentenceTransformer model and FAISS index
-def initialize_faiss_index(text):
-    model = SentenceTransformer('all-MiniLM-L6-v2')  # Load a pre-trained sentence transformer
-    sentences = text.split('\n')  # Split text into sentences or paragraphs
-    embeddings = model.encode(sentences, convert_to_numpy=True)  # Create embeddings for each sentence
+# Step 2: Split the text into chunks (e.g., paragraphs or sentences)
+def split_text_into_chunks(text, chunk_size=512):
+    chunks = []
+    words = text.split("\n")
+    chunk = ""
     
-    # Initialize FAISS index
-    index = faiss.IndexFlatL2(embeddings.shape[1])  # L2 distance metric for similarity search
-    index.add(np.array(embeddings))  # Add embeddings to the index
-    return model, sentences, index
+    for word in words:
+        if len(chunk.split()) + len(word.split()) <= chunk_size:
+            chunk += " " + word
+        else:
+            chunks.append(chunk)
+            chunk = word
+    
+    if chunk:
+        chunks.append(chunk)
+    
+    return chunks
 
-# Step 3: Retrieve relevant passages based on a query
-def retrieve_relevant_passages(query, model, sentences, index, k=3):
-    query_embedding = model.encode([query], convert_to_numpy=True)  # Create query embedding
-    distances, indices = index.search(query_embedding, k)  # Retrieve top-k similar sentences
-    retrieved_passages = [sentences[idx] for idx in indices[0]]
-    return retrieved_passages
+# Step 3: Create FAISS index for retrieval
+def create_faiss_index(chunks, retriever):
+    # Tokenize the chunks
+    inputs = retriever.tokenizer(chunks, padding=True, truncation=True, return_tensors="pt", max_length=512)
+    
+    # Get embeddings for the chunks
+    with torch.no_grad():
+        embeddings = retriever.compute_doc_embeddings(inputs['input_ids'])
 
-# Step 4: Generate a response using GPT-3 or similar model
-def generate_response(query, relevant_passages):
-    context = " ".join(relevant_passages)  # Concatenate retrieved passages
-    generator = pipeline("text-generation", model="gpt-2")  # Using GPT-2 for generation (you can switch to GPT-3)
-    response = generator(f"Context: {context} \nQuestion: {query} \nAnswer:", max_length=200)
-    return response[0]['generated_text']
+    # Convert embeddings to numpy
+    embeddings_np = embeddings.cpu().numpy()
 
-# Step 5: Main function to chat with PDF
-def chat_with_pdf(pdf_path, query):
-    # Step 1: Extract text from the PDF
+    # Create FAISS index
+    index = faiss.IndexFlatL2(embeddings_np.shape[1])
+    index.add(embeddings_np)
+    return index, inputs
+
+# Step 4: Set up RAG model and tokenizer
+def initialize_rag_model():
+    tokenizer = RagTokenizer.from_pretrained("facebook/rag-token-nq")
+    model = RagTokenForGeneration.from_pretrained("facebook/rag-token-nq")
+    retriever = RagRetriever.from_pretrained("facebook/rag-token-nq", index_name="custom", use_dummy_dataset=True)
+    return tokenizer, model, retriever
+
+# Step 5: Retrieve and generate response
+def chat_with_pdf(question, tokenizer, model, retriever, index, inputs):
+    # Tokenize the question
+    question_inputs = tokenizer(question, return_tensors="pt")
+
+    # Retrieve the top 5 relevant chunks
+    question_embedding = retriever.compute_query_embeddings(question_inputs['input_ids'])
+    question_embedding_np = question_embedding.cpu().numpy()
+
+    # Perform search on FAISS index
+    _, I = index.search(question_embedding_np, k=5)  # k=5 for top-5 results
+    retrieved_chunks = [inputs['input_ids'][i] for i in I[0]]
+
+    # Generate the answer using the RAG model
+    generated_ids = model.generate(input_ids=question_inputs['input_ids'],
+                                   context_input_ids=torch.cat(retrieved_chunks, dim=0).unsqueeze(0))
+
+    # Decode the generated answer
+    answer = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+    return answer
+
+# Main program to run
+def main(pdf_path, question):
+    # Step 1: Extract text from PDF
     pdf_text = extract_text_from_pdf(pdf_path)
+    
+    # Step 2: Preprocess the text (split into chunks)
+    text_chunks = split_text_into_chunks(pdf_text)
+    
+    # Step 3: Initialize RAG model, tokenizer, and retriever
+    tokenizer, model, retriever = initialize_rag_model()
+    
+    # Step 4: Create FAISS index
+    index, inputs = create_faiss_index(text_chunks, retriever)
+    
+    # Step 5: Get answer for the user's question
+    answer = chat_with_pdf(question, tokenizer, model, retriever, index, inputs)
+    return answer
 
-    # Step 2: Initialize FAISS index
-    model, sentences, index = initialize_faiss_index(pdf_text)
-
-    # Step 3: Retrieve relevant passages
-    relevant_passages = retrieve_relevant_passages(query, model, sentences, index)
-
-    # Step 4: Generate and return response
-    response = generate_response(query, relevant_passages)
-    return response
-
-# Example usage
-if __name__ == "__main__":
-    pdf_path = "file:///C:/Users/DELL/Desktop/gopitask1/Sithafal%20-%20project-tasks.pdf"  # Path to the PDF
-    query = "What is the main purpose of this document?"  # Your query to the PDF
-    response = chat_with_pdf(pdf_path, query)
-    print(response)
+# Example usage:
+if _name_ == "_main_":
+    pdf_path = "your_pdf_file.pdf"  # Path to your PDF file
+    question = "What is the main topic of this document?"
+    
+    answer = main(pdf_path, question)
+    print("Answer:", answer)
